@@ -15,12 +15,12 @@
 # * nearly all code in here was written by AI
 #
 # How to use
-# either 
+# either
 # * install the vioscsi.inf before OR
-# * tell the script to do it by -InfPath parameter OR
+# * tell the script to do it by -DriverPath parameter (path to folder with OS subfolders: 2k12R2, 2k16, 2k19, 2k22, 2k25) OR
 # * use virtio-win-guest-tools.exe /S to install it
 # depending on the set security policy it might be required to run the script via
-# PowerShell /ExecutionPolicy Bypass /File <path-to-this-script-file> [-InfPath <path-to-vioscsi.inf>]
+# PowerShell /ExecutionPolicy Bypass /File <path-to-this-script-file> [-DriverPath <path-to-vioscsi-driver-folder>]
 #
 # How does the script work?
 # * install the vioscsi driver, if requested
@@ -33,8 +33,56 @@
 
 # ==== PARAMETER ====
 param(
-    [string]$InfPath = ""  # Optional: Path to vioscsi.inf file
+    [string]$DriverPath = ""  # Optional: Path to folder containing OS subfolders (2k12R2, 2k16, 2k19, 2k22, 2k25)
 )
+
+# ==== OS DETECTION & INF PATH RESOLUTION ====
+$InfPath = ""
+if ($DriverPath) {
+    if (-not (Test-Path $DriverPath)) {
+        throw "Driver path does not exist: $DriverPath"
+    }
+
+    $osVersion = [System.Environment]::OSVersion.Version
+    $buildNumber = [int](Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuildNumber
+    $productType = (Get-CimInstance Win32_OperatingSystem).ProductType
+    # ProductType: 1 = Workstation, 2 = Domain Controller, 3 = Server
+
+    $osFolder = $null
+    if ($productType -eq 1) {
+        # Client OS
+        if ($osVersion.Major -eq 10 -and $buildNumber -ge 22000) {
+            $osFolder = "w11"
+        } elseif ($osVersion.Major -eq 10) {
+            $osFolder = "w10"
+        }
+    } else {
+        # Server OS
+        if ($osVersion.Major -eq 10 -and $buildNumber -ge 26100) {
+            $osFolder = "2k25"
+        } elseif ($osVersion.Major -eq 10 -and $buildNumber -ge 20348) {
+            $osFolder = "2k22"
+        } elseif ($osVersion.Major -eq 10 -and $buildNumber -ge 17763) {
+            $osFolder = "2k19"
+        } elseif ($osVersion.Major -eq 10 -and $buildNumber -ge 14393) {
+            $osFolder = "2k16"
+        } elseif ($osVersion.Major -eq 6 -and $osVersion.Minor -eq 3) {
+            $osFolder = "2k12R2"
+        }
+    }
+
+    if (-not $osFolder) {
+        throw "Could not determine OS folder for Windows version $($osVersion.Major).$($osVersion.Minor) Build $buildNumber"
+    }
+
+    $InfPath = Join-Path $DriverPath $osFolder "amd64" "vioscsi.inf"
+    if (-not (Test-Path $InfPath)) {
+        throw "Driver INF not found at expected path: $InfPath"
+    }
+
+    Write-Host "Detected OS folder: $osFolder" -ForegroundColor Cyan
+    Write-Host "Resolved INF path: $InfPath" -ForegroundColor Cyan
+}
 
 $source = @"
 using System;
