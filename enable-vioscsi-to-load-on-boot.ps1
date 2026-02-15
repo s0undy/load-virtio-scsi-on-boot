@@ -33,8 +33,25 @@
 
 # ==== PARAMETER ====
 param(
-    [string]$DriverPath = ""  # Optional: Path to folder containing OS subfolders (2k8, 2k8R2, 2k12, 2k12R2, 2k16, 2k19, 2k22, 2k25, w7, w8, w8.1, w10, w11)
+    [string]$DriverPath = "",  # Optional: Path to folder containing OS subfolders (2k8, 2k8R2, 2k12, 2k12R2, 2k16, 2k19, 2k22, 2k25, w7, w8, w8.1, w10, w11)
+    [string]$LogPath = "$env:windir\Temp\vioscsi-boot-loader.log"  # Log file path (CMTrace-compatible)
 )
+
+# ==== LOGGING ====
+function Write-Log {
+    param(
+        [string]$Message,
+        [ValidateSet("Info","Warn","Error")]
+        [string]$Severity = "Info"
+    )
+    $typeMap = @{ "Info" = 1; "Warn" = 2; "Error" = 3 }
+    $colorMap = @{ "Info" = "White"; "Warn" = "Yellow"; "Error" = "Red" }
+    $time = Get-Date -Format "HH:mm:ss.fff"
+    $date = Get-Date -Format "MM-dd-yyyy"
+    $entry = "<![LOG[$Message]LOG]!><time=`"$time`" date=`"$date`" component=`"vioscsi-loader`" context=`"`" type=`"$($typeMap[$Severity])`" thread=`"`" file=`"`">"
+    $entry | Out-File -Append -Encoding utf8 -FilePath $LogPath
+    Write-Host $Message -ForegroundColor $colorMap[$Severity]
+}
 
 # ==== OS DETECTION & INF PATH RESOLUTION ====
 $InfPath = ""
@@ -92,8 +109,8 @@ if ($DriverPath) {
         throw "Driver INF not found at expected path: $InfPath"
     }
 
-    Write-Host "Detected OS folder: $osFolder" -ForegroundColor Cyan
-    Write-Host "Resolved INF path: $InfPath" -ForegroundColor Cyan
+    Write-Log "Detected OS folder: $osFolder"
+    Write-Log "Resolved INF path: $InfPath"
 }
 
 $source = @"
@@ -264,7 +281,7 @@ public class DeviceInstaller
 
 # Checking for administrator access
 if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    Write-Error "This script must be run with administrator privileges!"
+    Write-Log "This script must be run with administrator privileges!" -Severity Error
     exit 1
 }
 
@@ -281,43 +298,43 @@ $virtioBasePath = "HKLM:\SOFTWARE\RedHat\Virtio-Win\Components\vioscsi"
 try {
     # OPTIONAL: Install INF driver first if path provided
     if ($InfPath -and (Test-Path $InfPath)) {
-        Write-Host "Installing INF driver from provided path..." -ForegroundColor Yellow
-        Write-Host "INF Path: $InfPath" -ForegroundColor Cyan
-        
+        Write-Log "Installing INF driver from provided path..." -Severity Warn
+        Write-Log "INF Path: $InfPath"
+
         # Check Windows version for correct pnputil syntax
         $osVersion = [System.Environment]::OSVersion.Version
         $buildNumber = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuildNumber
-        $useNewSyntax = ($osVersion.Major -gt 10) -or 
+        $useNewSyntax = ($osVersion.Major -gt 10) -or
                        (($osVersion.Major -eq 10) -and ([int]$buildNumber -ge 14393)) -or
                        (($osVersion.Major -eq 6) -and ($osVersion.Minor -ge 3))
-        
+
         try {
             if ($useNewSyntax) {
-                Write-Host "Executing: pnputil /add-driver `"$InfPath`" /install" -ForegroundColor Gray
+                Write-Log "Executing: pnputil /add-driver `"$InfPath`" /install"
                 & pnputil /add-driver "$InfPath" /install
             } else {
-                Write-Host "Executing: pnputil -a -i `"$InfPath`"" -ForegroundColor Gray
+                Write-Log "Executing: pnputil -a -i `"$InfPath`""
                 & pnputil -a -i "$InfPath"
             }
-            
+
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "INF driver installed successfully!" -ForegroundColor Green
+                Write-Log "INF driver installed successfully!"
             } else {
-                Write-Host "INF installation completed with exit code $LASTEXITCODE" -ForegroundColor Yellow
+                Write-Log "INF installation completed with exit code $LASTEXITCODE" -Severity Warn
             }
         } catch {
-            Write-Host "INF installation failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Log "INF installation failed: $($_.Exception.Message)" -Severity Error
             throw "Cannot continue without driver installation"
         }
-        
-        Write-Host "Waiting for driver registration..." -ForegroundColor Cyan
+
+        Write-Log "Waiting for driver registration..."
         Start-Sleep -Seconds 2
     } elseif ($InfPath) {
         throw "Provided INF path does not exist: $InfPath"
     }
     # Check if VirtIO registry entries exist
     if (-not (Test-Path $virtioBasePath)) {
-        Write-Host "VirtIO guest tools registry not found, searching DriverDatabase..." -ForegroundColor Yellow
+        Write-Log "VirtIO guest tools registry not found, searching DriverDatabase..." -Severity Warn
         
         # Fallback: Search in DriverDatabase for vioscsi.inf
         $driverDbPath = "HKLM:\SYSTEM\DriverDatabase\DriverPackages"
@@ -329,8 +346,8 @@ try {
             $oemInfName = (Get-ItemProperty -Path $driverEntry.PSPath).'(default)'
             
             if ($oemInfName) {
-                Write-Host "Found vioscsi driver in DriverDatabase: $($driverEntry.Name.Split('\')[-1])" -ForegroundColor Cyan
-                Write-Host "OEM INF name: $oemInfName" -ForegroundColor Cyan
+                Write-Log "Found vioscsi driver in DriverDatabase: $($driverEntry.Name.Split('\')[-1])"
+                Write-Log "OEM INF name: $oemInfName"
                 $oemInf = "$env:windir\INF\$oemInfName"
                 $infFullPath = $oemInf  # Set for consistency
             } else {
@@ -341,7 +358,7 @@ try {
         }
     } else {
         # Original method: Read from VirtIO guest tools registry
-        Write-Host "Reading VirtIO registry values..." -ForegroundColor Yellow
+        Write-Log "Reading VirtIO registry values..." -Severity Warn
         $virtioProps = Get-ItemProperty -Path $virtioBasePath
         $infFullPath = $virtioProps.strongname
         $oemInfName = $virtioProps.oem
@@ -350,19 +367,19 @@ try {
             throw "Registry values strongname or oem not found"
         }
         
-        Write-Host "INF path found: $infFullPath" -ForegroundColor Cyan
-        Write-Host "OEM name found: $oemInfName" -ForegroundColor Cyan
+        Write-Log "INF path found: $infFullPath"
+        Write-Log "OEM name found: $oemInfName"
         $oemInf = "$env:windir\INF\$oemInfName"
     }
 
     # Step 1: Create device
-    Write-Host "`nStep 1: Creating device using Setup API..." -ForegroundColor Yellow
-    
+    Write-Log "Step 1: Creating device using Setup API..."
+
     [DeviceInstaller]::CreateSoftwareDeviceWithHardwareId($deviceId, $classGuid, $hardwareId)
-    Write-Host "Device created successfully using Setup API!" -ForegroundColor Green
+    Write-Log "Device created successfully using Setup API!"
 
     # Step 2: Assign driver
-    Write-Host "`nStep 2: Configuring driver assignment via registry..." -ForegroundColor Yellow
+    Write-Log "Step 2: Configuring driver assignment via registry..."
     
     $targetHardwareId = $hardwareId
     
@@ -370,67 +387,67 @@ try {
     $devicePath = "HKLM:\SYSTEM\CurrentControlSet\Enum\ROOT\$deviceId\0000"
     
     if (-not (Test-Path $devicePath)) {
-        Write-Host "Warning: Created device not found at expected path $devicePath" -ForegroundColor Yellow
+        Write-Log "Warning: Created device not found at expected path $devicePath" -Severity Warn
         $enumPath = "HKLM:\SYSTEM\CurrentControlSet\Enum\ROOT"
         $vioscsiDevices = Get-ChildItem $enumPath | Where-Object { $_.Name -like "*vioscsi*" -or $_.Name -like "*$deviceId*" }
         if ($vioscsiDevices) {
             $devicePath = $vioscsiDevices[0].PSPath + "\0000"
-            Write-Host "Found device at: $devicePath" -ForegroundColor Cyan
+            Write-Log "Found device at: $devicePath"
         }
     }
     
     if (Test-Path $devicePath) {
-        Write-Host "=== BEFORE Registry modifications ===" -ForegroundColor Magenta
+        Write-Log "=== BEFORE Registry modifications ==="
         $originalProps = Get-ItemProperty -Path $devicePath
-        Write-Host "Original Hardware ID: $($originalProps.HardwareID)" -ForegroundColor Yellow
-        Write-Host "Original Class: $($originalProps.Class)" -ForegroundColor Yellow
-        Write-Host "Original Service: $($originalProps.Service)" -ForegroundColor Yellow
-        Write-Host "Original ClassGUID: $($originalProps.ClassGUID)" -ForegroundColor Yellow
-        
-        Write-Host "Checking device registry configuration..." -ForegroundColor Cyan
+        Write-Log "Original Hardware ID: $($originalProps.HardwareID)"
+        Write-Log "Original Class: $($originalProps.Class)"
+        Write-Log "Original Service: $($originalProps.Service)"
+        Write-Log "Original ClassGUID: $($originalProps.ClassGUID)"
+
+        Write-Log "Checking device registry configuration..."
         
         # Add only missing values, no overwriting
         if (-not $originalProps.Service) {
             Set-ItemProperty -Path $devicePath -Name "Service" -Value "vioscsi" -Type String
-            Write-Host "Added Service: vioscsi" -ForegroundColor Green
+            Write-Log "Added Service: vioscsi"
         } else {
-            Write-Host "Service already set: $($originalProps.Service)" -ForegroundColor Cyan
+            Write-Log "Service already set: $($originalProps.Service)"
         }
         
         if (-not $originalProps.Class) {
             Set-ItemProperty -Path $devicePath -Name "Class" -Value "SCSIAdapter" -Type String
-            Write-Host "Added Class: SCSIAdapter" -ForegroundColor Green
+            Write-Log "Added Class: SCSIAdapter"
         } else {
-            Write-Host "Class already set: $($originalProps.Class)" -ForegroundColor Cyan
+            Write-Log "Class already set: $($originalProps.Class)"
         }
         
         if (-not $originalProps.DeviceDesc) {
             Set-ItemProperty -Path $devicePath -Name "DeviceDesc" -Value "@$oemInfName,%virtioscsi.devicedesc%;VirtIO SCSI Controller" -Type String
-            Write-Host "Added DeviceDesc" -ForegroundColor Green
+            Write-Log "Added DeviceDesc"
         } else {
-            Write-Host "DeviceDesc already set" -ForegroundColor Cyan
+            Write-Log "DeviceDesc already set"
         }
         
         if (-not $originalProps.Mfg) {
             Set-ItemProperty -Path $devicePath -Name "Mfg" -Value "@$oemInfName,%vendor%;Red Hat, Inc." -Type String
-            Write-Host "Added Mfg" -ForegroundColor Green
+            Write-Log "Added Mfg"
         } else {
-            Write-Host "Mfg already set" -ForegroundColor Cyan
+            Write-Log "Mfg already set"
         }
         
         if (-not $originalProps.CompatibleIDs) {
             $compatibleIds = @("PCI\VEN_1AF4&DEV_1004", "PCI\VEN_1AF4", "PCI\CC_010000", "PCI\CC_0100")
             Set-ItemProperty -Path $devicePath -Name "CompatibleIDs" -Value $compatibleIds -Type MultiString
-            Write-Host "Added CompatibleIDs" -ForegroundColor Green
+            Write-Log "Added CompatibleIDs"
         } else {
-            Write-Host "CompatibleIDs already set" -ForegroundColor Cyan
+            Write-Log "CompatibleIDs already set"
         }
         
-        Write-Host "Device registry configuration checked" -ForegroundColor Green
+        Write-Log "Device registry configuration checked"
     }
     
     # Step 2a: Pre-configure driver binding to force immediate loading
-    Write-Host "`nStep 2a: Pre-configuring driver binding..." -ForegroundColor Yellow
+    Write-Log "Step 2a: Pre-configuring driver binding..."
     
     # Create driver binding in Control\Class to force immediate association
     $classPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e97b-e325-11ce-bfc1-08002be10318}"
@@ -462,18 +479,18 @@ try {
     Set-ItemProperty -Path $newClassPath -Name "MatchingDeviceId" -Value $targetHardwareId -Type String
     Set-ItemProperty -Path $newClassPath -Name "DriverDesc" -Value "Red Hat VirtIO SCSI pass-through controller" -Type String
     
-    Write-Host "Driver class binding created: $nextNumberStr" -ForegroundColor Green
+    Write-Log "Driver class binding created: $nextNumberStr"
     
     # Pre-configure the device to reference this driver
     if (Test-Path $devicePath) {
         Set-ItemProperty -Path $devicePath -Name "Driver" -Value "{4d36e97b-e325-11ce-bfc1-08002be10318}\$nextNumberStr" -Type String
         Set-ItemProperty -Path $devicePath -Name "Problem" -Value 0 -Type DWord
         Set-ItemProperty -Path $devicePath -Name "StatusFlags" -Value 0x18 -Type DWord
-        Write-Host "Device pre-configured with driver binding" -ForegroundColor Green
+        Write-Log "Device pre-configured with driver binding"
     }
     
     # Step 3: Create Critical Device Database entries
-    Write-Host "`nStep 3: Creating Critical Device Database entries..." -ForegroundColor Yellow
+    Write-Log "Step 3: Creating Critical Device Database entries..."
     
     # Critical Device Database paths
     $criticalDbPaths = @(
@@ -495,14 +512,14 @@ try {
             $criticalDbCount++
             
             $shortPath = $criticalPath.Split('\')[-1]
-            Write-Host "Critical DB entry created: $shortPath" -ForegroundColor Green
+            Write-Log "Critical DB entry created: $shortPath"
         }
     }
     
-    Write-Host "Total Critical DB entries created: $criticalDbCount/$($criticalDbPaths.Count)" -ForegroundColor $(if ($criticalDbCount -eq $criticalDbPaths.Count) { 'Green' } else { 'Yellow' })
+    Write-Log "Total Critical DB entries created: $criticalDbCount/$($criticalDbPaths.Count)" -Severity $(if ($criticalDbCount -eq $criticalDbPaths.Count) { 'Info' } else { 'Warn' })
     
     # Step 4: Trigger device enumeration
-    Write-Host "`nStep 5: Triggering device enumeration..." -ForegroundColor Yellow
+    Write-Log "Step 4: Triggering device enumeration..."
     
     # Simple Configuration Manager API for ROOT enumeration only
     Add-Type @"
@@ -532,41 +549,41 @@ public class ConfigManager {
 "@
     
     # Re-enumerate ROOT devices
-    Write-Host "Re-enumerating ROOT device tree..." -ForegroundColor Cyan
+    Write-Log "Re-enumerating ROOT device tree..."
     $rootSuccess = [ConfigManager]::ReenumerateRootDevices()
     if ($rootSuccess) {
-        Write-Host "ROOT enumeration successful" -ForegroundColor Green
+        Write-Log "ROOT enumeration successful"
     } else {
-        Write-Host "ROOT enumeration completed (result unknown)" -ForegroundColor Yellow
+        Write-Log "ROOT enumeration completed (result unknown)" -Severity Warn
     }
     
     # Wait for processing
-    Write-Host "Waiting for Windows to process enumeration..." -ForegroundColor Cyan
+    Write-Log "Waiting for Windows to process enumeration..."
     Start-Sleep -Seconds 3
-    
+
     # Step 5: Verification
-    Write-Host "`n=== VERIFICATION ===" -ForegroundColor Magenta
-    
+    Write-Log "=== VERIFICATION ==="
+
     # Check device
     if (Test-Path $devicePath) {
         $deviceProps = Get-ItemProperty -Path $devicePath
-        Write-Host "Device:" -ForegroundColor White
-        Write-Host "  Hardware ID: $($deviceProps.HardwareID[0])" -ForegroundColor White
-        Write-Host "  Service: $($deviceProps.Service)" -ForegroundColor White
-        Write-Host "  Class: $($deviceProps.Class)" -ForegroundColor White
-        Write-Host "  Driver: $($deviceProps.Driver)" -ForegroundColor White
+        Write-Log "Device:"
+        Write-Log "  Hardware ID: $($deviceProps.HardwareID[0])"
+        Write-Log "  Service: $($deviceProps.Service)"
+        Write-Log "  Class: $($deviceProps.Class)"
+        Write-Log "  Driver: $($deviceProps.Driver)"
     }
-      
-    Write-Host "Device creation and driver assignment complete!" -ForegroundColor Green
-    
+
+    Write-Log "Device creation and driver assignment complete!"
+
     # FINAL STEP: Install driver using pnputil
-    Write-Host "`nFinal Step: Installing driver using pnputil..." -ForegroundColor Yellow
-    
+    Write-Log "Final Step: Installing driver using pnputil..."
+
     # Check Windows version for correct pnputil syntax
     $osVersion = [System.Environment]::OSVersion.Version
     $buildNumber = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").CurrentBuildNumber
-    
-    Write-Host "Detected Windows version: $($osVersion.Major).$($osVersion.Minor) Build $buildNumber" -ForegroundColor Gray
+
+    Write-Log "Detected Windows version: $($osVersion.Major).$($osVersion.Minor) Build $buildNumber"
     
     # Windows 10 1607 = Build 14393, where /add-driver /install was introduced
     $useNewSyntax = ($osVersion.Major -gt 10) -or 
@@ -575,38 +592,38 @@ public class ConfigManager {
     
     try {
         if ($useNewSyntax) {
-            Write-Host "Using modern pnputil syntax: /add-driver /install" -ForegroundColor Cyan
-            Write-Host "Executing: pnputil /add-driver `"$oemInf`" /install" -ForegroundColor Gray
+            Write-Log "Using modern pnputil syntax: /add-driver /install"
+            Write-Log "Executing: pnputil /add-driver `"$oemInf`" /install"
             & pnputil /add-driver "$oemInf" /install
         } else {
-            Write-Host "Using legacy pnputil syntax: -a -i" -ForegroundColor Cyan  
-            Write-Host "Executing: pnputil -a -i `"$oemInf`"" -ForegroundColor Gray
+            Write-Log "Using legacy pnputil syntax: -a -i"
+            Write-Log "Executing: pnputil -a -i `"$oemInf`""
             & pnputil -a -i "$oemInf"
         }
-        
+
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "Driver successfully installed via pnputil!" -ForegroundColor Green
+            Write-Log "Driver successfully installed via pnputil!"
         } else {
-            Write-Host "pnputil completed with exit code $LASTEXITCODE" -ForegroundColor Yellow
+            Write-Log "pnputil completed with exit code $LASTEXITCODE" -Severity Warn
         }
     } catch {
-        Write-Host "pnputil execution failed: $($_.Exception.Message)" -ForegroundColor Red
-        
+        Write-Log "pnputil execution failed: $($_.Exception.Message)" -Severity Error
+
         # Fallback: Try the other syntax if the first one failed
         try {
             if ($useNewSyntax) {
-                Write-Host "Trying fallback with legacy syntax..." -ForegroundColor Yellow
+                Write-Log "Trying fallback with legacy syntax..." -Severity Warn
                 & pnputil -a -i "$oemInf"
             } else {
-                Write-Host "Trying fallback with modern syntax..." -ForegroundColor Yellow
+                Write-Log "Trying fallback with modern syntax..." -Severity Warn
                 & pnputil /add-driver "$oemInf" /install
             }
-            
+
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "Driver installed with fallback syntax!" -ForegroundColor Green
+                Write-Log "Driver installed with fallback syntax!"
             }
         } catch {
-            Write-Host "Both pnputil syntaxes failed" -ForegroundColor Red
+            Write-Log "Both pnputil syntaxes failed" -Severity Error
         }
     }
 	    # Check Windows version for pnputil /remove-device support
@@ -614,18 +631,18 @@ public class ConfigManager {
     $supportsRemoveDevice = ([int]$buildNumber -ge 19041)
     
     if (-not $supportsRemoveDevice) {
-        Write-Host "`npnputil /remove-device not supported on this Windows version (Build $buildNumber)" -ForegroundColor Yellow
-        Write-Host "Required: Windows 10 2004+ (Build 19041+) or Windows Server 2022+" -ForegroundColor Yellow
-        Write-Host "`nManual removal required:" -ForegroundColor Cyan
-        Write-Host "- Device Manager: devmgmt.msc -> Uninstall VirtIO SCSI Controller" -ForegroundColor Gray
-        Write-Host "- devcon.exe: devcon remove ROOT\\VIOSCSI\\0000" -ForegroundColor Gray
+        Write-Log "pnputil /remove-device not supported on this Windows version (Build $buildNumber)" -Severity Warn
+        Write-Log "Required: Windows 10 2004+ (Build 19041+) or Windows Server 2022+" -Severity Warn
+        Write-Log "Manual removal required:"
+        Write-Log "- Device Manager: devmgmt.msc -> Uninstall VirtIO SCSI Controller"
+        Write-Log "- devcon.exe: devcon remove ROOT\\VIOSCSI\\0000"
         return
     }
 
-    Write-Host "`nStep 1: Finding VirtIO phantom devices..." -ForegroundColor Yellow
-    
+    Write-Log "Step 1: Finding VirtIO phantom devices..."
+
     # Find devices using pnputil
-    Write-Host "Enumerating devices with pnputil..." -ForegroundColor Cyan
+    Write-Log "Enumerating devices with pnputil..."
     $deviceList = & pnputil /enum-devices 2>&1
     
     # Parse output to find VirtIO devices
@@ -645,65 +662,66 @@ public class ConfigManager {
                     InstanceId = $currentInstanceId
                     Description = $deviceDesc
                 }
-                Write-Host "Found VirtIO phantom device: $deviceDesc [$currentInstanceId]" -ForegroundColor Cyan
+                Write-Log "Found VirtIO phantom device: $deviceDesc [$currentInstanceId]"
             }
         }
     }
     
     if ($virtioDevices.Count -eq 0) {
-        Write-Host "No VirtIO phantom devices found" -ForegroundColor Yellow
+        Write-Log "No VirtIO phantom devices found" -Severity Warn
     } else {
-        Write-Host "Found $($virtioDevices.Count) VirtIO device(s) to remove" -ForegroundColor Green
+        Write-Log "Found $($virtioDevices.Count) VirtIO device(s) to remove"
     }
-    
-    Write-Host "`nStep 2: Removing devices using pnputil..." -ForegroundColor Yellow
+
+    Write-Log "Step 2: Removing devices using pnputil..."
     
     $removedCount = 0
     foreach ($device in $virtioDevices) {
-        Write-Host "Removing device: $($device.Description)" -ForegroundColor Cyan
-        Write-Host "Instance ID: $($device.InstanceId)" -ForegroundColor Gray
-        
+        Write-Log "Removing device: $($device.Description)"
+        Write-Log "Instance ID: $($device.InstanceId)"
+
         try {
             # Remove device using pnputil
-            Write-Host "Executing: pnputil /remove-device `"$($device.InstanceId)`"" -ForegroundColor Gray
+            Write-Log "Executing: pnputil /remove-device `"$($device.InstanceId)`""
             & pnputil /remove-device "$($device.InstanceId)"
-            
+
             if ($LASTEXITCODE -eq 0) {
-                Write-Host "Device removed successfully" -ForegroundColor Green
+                Write-Log "Device removed successfully"
                 $removedCount++
             } else {
-                Write-Host "pnputil completed with exit code $LASTEXITCODE" -ForegroundColor Yellow
+                Write-Log "pnputil completed with exit code $LASTEXITCODE" -Severity Warn
             }
         } catch {
-            Write-Host "Failed to remove device: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Log "Failed to remove device: $($_.Exception.Message)" -Severity Error
         }
     }
     
-    Write-Host "`nStep 3: Verification..." -ForegroundColor Yellow
-    
+    Write-Log "Step 3: Verification..."
+
     # Check if devices still exist
     $remainingDevices = Get-WmiObject -Class Win32_PnPEntity -Filter "DeviceID LIKE 'ROOT\\%vioscsi%'" -ErrorAction SilentlyContinue
     if ($remainingDevices) {
-        Write-Host "Some VirtIO phantom devices still visible:" -ForegroundColor Yellow
+        Write-Log "Some VirtIO phantom devices still visible:" -Severity Warn
         foreach ($device in $remainingDevices) {
-            Write-Host "  - $($device.Name) [$($device.Status)]" -ForegroundColor Yellow
+            Write-Log "  - $($device.Name) [$($device.Status)]" -Severity Warn
         }
     } else {
-        Write-Host "No VirtIO phantom devices found in system" -ForegroundColor Green
+        Write-Log "No VirtIO phantom devices found in system"
     }
-    
-    Write-Host "`n=== REMOVAL COMPLETED ===" -ForegroundColor Red
-    Write-Host "pnputil-based phantom device removal complete!" -ForegroundColor Green
-    
-    Write-Host "`nSummary:" -ForegroundColor Cyan
-    Write-Host "- Devices removed via pnputil: $removedCount" -ForegroundColor $(if ($removedCount -gt 0) { 'Green' } else { 'Yellow' })
-    
+
+    Write-Log "=== REMOVAL COMPLETED ==="
+    Write-Log "pnputil-based phantom device removal complete!"
+
+    Write-Log "Summary:"
+    Write-Log "- Devices removed via pnputil: $removedCount"
+
     if ($removedCount -eq 0 -and $virtioDevices.Count -eq 0) {
-        Write-Host "`nNo phantom devices found - system is already clean" -ForegroundColor Cyan
+        Write-Log "No phantom devices found - system is already clean"
     }
 } catch {
-    Write-Host "`n=== ERROR ===" -ForegroundColor Red
+    Write-Log "=== ERROR ===" -Severity Error
     $errorMessage = $_.Exception.Message
-    Write-Host "Error during device creation and configuration or removal: $errorMessage" -ForegroundColor Red
+    Write-Log "Error during device creation and configuration or removal: $errorMessage" -Severity Error
     exit 1
 }
+exit 0
