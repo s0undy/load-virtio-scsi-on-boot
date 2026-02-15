@@ -33,7 +33,7 @@
 
 # ==== PARAMETER ====
 param(
-    [string]$DriverPath = ""  # Optional: Path to folder containing OS subfolders (2k12R2, 2k16, 2k19, 2k22, 2k25)
+    [string]$DriverPath = ""  # Optional: Path to folder containing OS subfolders (2k8, 2k8R2, 2k12, 2k12R2, 2k16, 2k19, 2k22, 2k25, w7, w8, w8.1, w10, w11)
 )
 
 # ==== OS DETECTION & INF PATH RESOLUTION ====
@@ -55,6 +55,12 @@ if ($DriverPath) {
             $osFolder = "w11"
         } elseif ($osVersion.Major -eq 10) {
             $osFolder = "w10"
+        } elseif ($osVersion.Major -eq 6 -and $osVersion.Minor -eq 3) {
+            $osFolder = "w8.1"
+        } elseif ($osVersion.Major -eq 6 -and $osVersion.Minor -eq 2) {
+            $osFolder = "w8"
+        } elseif ($osVersion.Major -eq 6 -and $osVersion.Minor -eq 1) {
+            $osFolder = "w7"
         }
     } else {
         # Server OS
@@ -68,6 +74,12 @@ if ($DriverPath) {
             $osFolder = "2k16"
         } elseif ($osVersion.Major -eq 6 -and $osVersion.Minor -eq 3) {
             $osFolder = "2k12R2"
+        } elseif ($osVersion.Major -eq 6 -and $osVersion.Minor -eq 2) {
+            $osFolder = "2k12"
+        } elseif ($osVersion.Major -eq 6 -and $osVersion.Minor -eq 1) {
+            $osFolder = "2k8R2"
+        } elseif ($osVersion.Major -eq 6 -and $osVersion.Minor -eq 0) {
+            $osFolder = "2k8"
         }
     }
 
